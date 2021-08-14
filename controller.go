@@ -1,6 +1,9 @@
 package scurry
 
 import (
+	"net"
+	"strings"
+
 	"github.com/rs/zerolog"
 )
 
@@ -18,6 +21,8 @@ type ControllerConfig struct {
 type Controller struct {
 	log zerolog.Logger
 	cfg ControllerConfig
+
+	sConn net.Conn
 
 	measQ chan Measurement
 	resQ  chan Measurement
@@ -40,11 +45,44 @@ func NewController(log zerolog.Logger, cfg ControllerConfig) (*Controller, error
 		resQ:  make(chan Measurement, RECV_Q_LEN),
 	}
 
+	// connect and attach to scamper daemon
+	err := c.initScamper()
+	if err != nil {
+		return nil, err
+	}
+
 	c.log.Info().
 		Interface("config", cfg).
 		Msgf("Controller online")
 
 	return c, nil
+}
+
+func (c *Controller) initScamper() error {
+	// TODO: better unix socket detection
+	var conn net.Conn
+	var err error
+	if strings.Contains(":", c.cfg.ScamperURL) {
+		conn, err = net.Dial("tcp", c.cfg.ScamperURL)
+	} else {
+		conn, err = net.Dial("unix", c.cfg.ScamperURL)
+	}
+	if err != nil {
+		return err
+	}
+	c.sConn = conn
+
+	// create buffered writer/reader
+
+	// send our attach command now
+	return c.sendCmd("attach \"1\" \"json\"")
+}
+
+func (c *Controller) sendCmd(cmd string) error {
+	c.log.Debug().
+		Str("command", cmd).
+		Msgf("Sending command to scamper")
+	return nil
 }
 
 func (c *Controller) MeasurementQueue() chan Measurement {
@@ -67,4 +105,6 @@ func (c *Controller) Close() {
 		return
 	}
 	c.log.Info().Msgf("Shutting down")
+
+	c.sConn.Close()
 }
