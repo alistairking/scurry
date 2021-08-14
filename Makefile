@@ -8,7 +8,7 @@ CLI=scurry
 
 all: cli
 
-dev: mod-tidy pkg cli test
+dev: mod-tidy codegen pkg cli test
 
 cli:
 	mkdir -p $(BINDIR)
@@ -26,6 +26,10 @@ clean:
 
 mod-tidy:
 	$(GOMOD) tidy
+
+codegen:
+	go get github.com/alvaroloes/enumer
+	go generate ./
 
 run: cli
 	$(BINDIR)/$(CLI)
