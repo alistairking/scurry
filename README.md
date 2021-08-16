@@ -1,10 +1,10 @@
 # scurry
-Golang interface to Scamper
+Golang interface to [Scamper](https://www.caida.org/catalog/software/scamper/).
 
 ## Dependencies
 
 Other than the normal go module dependencies, you will also need to have built
-[Scamper](https://www.caida.org/catalog/software/scamper/ (or installed it from
+[Scamper](https://www.caida.org/catalog/software/scamper/) (or installed it from
 a package).
 
 ## Usage
