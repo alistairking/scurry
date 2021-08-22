@@ -21,9 +21,12 @@ type ControllerConfig struct {
 
 // Simple scamper control socket client
 type Controller struct {
-	log    Logger
-	cfg    ControllerConfig
-	attach *ScAttach
+	log         Logger
+	cfg         ControllerConfig
+	attach      *ScAttach
+	outstanding map[uint64]Measurement
+	nextId      uint64
+	mu          *sync.RWMutex
 
 	measQ      chan Measurement
 	measCancel context.CancelFunc
@@ -44,9 +47,12 @@ func NewController(log zerolog.Logger, cfg ControllerConfig) (*Controller, error
 	}
 
 	c := &Controller{
-		log:    initLogger(log, "controller"),
-		cfg:    cfg,
-		attach: attach,
+		log:         initLogger(log, "controller"),
+		cfg:         cfg,
+		attach:      attach,
+		outstanding: map[uint64]Measurement{},
+		nextId:      1,
+		mu:          &sync.RWMutex{},
 
 		measQ:      make(chan Measurement, SEND_Q_LEN),
 		measCancel: measCancel,
@@ -103,6 +109,22 @@ func (c *Controller) Close() {
 	c.log.Info().Msgf("Shutdown complete")
 }
 
+func (c *Controller) sendMeasurement(meas Measurement) {
+	c.mu.Lock()
+	// TODO: more complex IDs?
+	meas.userId = c.nextId
+	c.nextId++
+	c.outstanding[meas.userId] = meas
+	c.mu.Unlock()
+	measCmd := meas.AsCommand()
+	c.log.Debug().
+		Interface("measurement", meas).
+		Str("command", measCmd).
+		Msgf("Sending command to scamper")
+	// this might block
+	c.attach.CommandQueue() <- measCmd
+}
+
 func (c *Controller) measurementHandler(ctx context.Context) {
 	defer func() {
 		close(c.measQ)
@@ -111,18 +133,11 @@ func (c *Controller) measurementHandler(ctx context.Context) {
 
 	// pull from our measurement queue, convert to a scamper
 	// command and hand off to ScAttach for execution
-	scQ := c.attach.CommandQueue()
 hamster:
 	for {
 		select {
-		case _ = <-c.measQ:
-			// TODO: actually convert this to a command
-			measStr := "ping 8.8.8.8"
-			c.log.Debug().
-				Str("measurement", measStr).
-				Msgf("Sending measurement to scamper")
-			// this might block
-			scQ <- measStr
+		case meas := <-c.measQ:
+			c.sendMeasurement(meas)
 
 		case <-ctx.Done():
 			// canceled, need to drain measQ and then exit
@@ -136,17 +151,46 @@ hamster:
 	c.log.Info().
 		Int("queue-length", len(c.measQ)).
 		Msgf("Draining measurement queue")
-	for _ = range c.measQ {
-		// TODO: actually convert this to a command
-		measStr := "ping 8.8.8.8"
-		c.log.Debug().
-			Str("measurement", measStr).
-			Msgf("Sending measurement to scamper")
-		// this might block
-		scQ <- measStr
+	for len(c.measQ) > 0 {
+		c.sendMeasurement(<-c.measQ)
 	}
 	c.log.Info().
 		Msgf("Measurement queue drained")
+}
+
+func (c *Controller) handleResult(resStr string) {
+	scRes, err := NewScResultFromJson(resStr)
+	if err != nil {
+		// TODO: handle these in-band
+		c.log.Error().
+			Err(err).
+			Msgf("Failed to parse result from scamper")
+		return
+	}
+
+	// discard the initial cycle-start we get after we attach
+	if scRes.Type == "cycle-start" {
+		c.log.Debug().
+			Str("result", resStr).
+			Msgf("Discarding cycle-start")
+		return
+	}
+
+	c.mu.Lock()
+	meas, exists := c.outstanding[scRes.UserID]
+	delete(c.outstanding, scRes.UserID)
+	c.mu.Unlock()
+
+	if !exists {
+		c.log.Error().
+			Interface("sc-result", scRes).
+			Uint64("userid", scRes.UserID).
+			Msgf("Couldn't find measurement for scamper result")
+		return
+	}
+
+	meas.Result = *scRes
+	c.resQ <- meas
 }
 
 func (c *Controller) responseHandler(ctx context.Context) {
@@ -162,11 +206,7 @@ hamster:
 	for {
 		select {
 		case resStr := <-resultQ:
-			c.log.Debug().
-				Str("result", resStr).
-				Msgf("Received result from scamper")
-			// TODO: parse it, match against queued
-			// measurement, and then push into c.resQ
+			c.handleResult(resStr)
 
 		case errStr := <-errQ:
 			c.log.Error().
@@ -182,9 +222,9 @@ hamster:
 
 	ctx, cancel := context.WithTimeout(context.Background(), SHUTDOWN_LINGER)
 	defer cancel()
-	// TODO: change this so that we stop early once all
-	// outstanding measurements are back
-	rem := 1 // XXX
+	c.mu.RLock()
+	rem := len(c.outstanding)
+	c.mu.RUnlock()
 	c.log.Info().
 		Int("outstanding", rem).
 		Dur("linger", SHUTDOWN_LINGER).
@@ -192,15 +232,15 @@ hamster:
 	for {
 		select {
 		case resStr := <-resultQ:
-			c.log.Debug().
-				Str("result", resStr).
-				Msgf("Received result from scamper")
-			// TODO: parse it, match against queued
-			// measurement, and then push into c.resQ
+			c.handleResult(resStr)
+			c.mu.RLock()
+			rem := len(c.outstanding)
+			c.mu.RUnlock()
 			if rem == 0 {
 				// done
 				c.log.Info().
 					Msgf("Received responses from scamper")
+				return
 			}
 
 		case errStr := <-errQ:

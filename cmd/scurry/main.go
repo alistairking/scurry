@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -17,10 +18,14 @@ type PingCmd struct {
 	// TODO
 }
 
+type TracerouteCmd struct {
+	// TODO
+}
+
 type ScurryCLI struct {
 	// measurement commands
-	Ping PingCmd `cmd help:"Ping measurements"`
-	// TODO traceroute
+	Ping       PingCmd       `cmd help:"Ping measurements"`
+	Traceroute TracerouteCmd `cmd help:"Traceroute measurements"`
 
 	// global measurement config
 	Target []string `required help:"IP to execute measurements towards"`
@@ -92,9 +97,10 @@ func initMeasurement(cmd string, cfg ScurryCLI) (scurry.Measurement, error) {
 
 	switch mType {
 	case scurry.MEASUREMENT_PING:
-		meas.Ping = scurry.Ping(cfg.Ping)
+		meas.Options.Ping = scurry.Ping(cfg.Ping)
 
-		// TODO:
+	case scurry.MEASUREMENT_TRACEROUTE:
+		meas.Options.Traceroute = scurry.Traceroute(cfg.Traceroute)
 	}
 
 	return meas, nil
@@ -134,9 +140,14 @@ func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup, ct
 				return
 			}
 			cnt++
-			log.Debug().
-				Interface("result", result).
-				Msgf("Received measurement result")
+			j, err := result.AsJson()
+			if err != nil {
+				log.Error().
+					Err(err).
+					Msgf("Failed to convert measurement to JSON")
+				continue
+			}
+			fmt.Println(j)
 		case <-ctx.Done():
 			// canceled, just give up
 			return

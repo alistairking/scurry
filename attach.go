@@ -122,7 +122,7 @@ func (a *ScAttach) sendCmd(cmd string) {
 }
 
 func (a *ScAttach) handleResponse(resp string) {
-	if resp == "OK" {
+	if strings.HasPrefix(resp, "OK") {
 		// ignore these, they're expected
 		a.log.Debug().
 			Msgf("Got OK from scamper")
