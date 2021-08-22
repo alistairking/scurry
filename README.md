@@ -1,5 +1,9 @@
 # scurry
-Golang interface to [Scamper](https://www.caida.org/catalog/software/scamper/).
+Golang interface to
+[Scamper](https://www.caida.org/catalog/software/scamper/).
+
+**Note:** This is still very much a work-in-progress. The measurement
+structures are only partially implemented.
 
 ## Dependencies
 
@@ -15,7 +19,7 @@ be used either as a basic CLI tool, or as a package.
 In either mode, you will first need to start scamper and have it listen on a
 control socket:
 ```bash
-# scamper -p 1000 -U /tmp/scamper-scurry.sock
+# scamper -p 1000 -U /tmp/scamper.sock
 ```
 
 ### CLI
@@ -84,5 +88,51 @@ $ scurry -s /tmp/scamper.sock ping -t 8.8.8.8 | jq
 
 ### Package
 
-TODO. See the [CLI implementation](./cmd/scurry/main.go) for an
-example.
+#### Controller
+
+The `Controller` type is currently the easiest way to drive
+scamper. It accepts [`Measurement`](./measurement.go) objects over a
+channel (`Controller.MeasurementQueue()`), and (asynchronously)
+returns the same objects populated with a scamper result object over
+another channel (`Controller.ResultQueue()`).
+
+See the `main()` function of the [scurry CLI](./cmd/scurry/main.go)
+for a worked example of using the Controller.
+
+#### ScAttach
+
+The [`ScAttach`](./attach.go) type is a low-level Scamper "attach"
+driver. It connects to an already-running Scamper daemon (either via
+TCP or unix domain socket), attaches using the (as-yet undocumented)
+`attach format json` command to request results be returned in JSON
+format rather than uuencoded warts binary.
+
+ScAttach exposes three channels:
+ - `CommandQueue() chan string`
+ - `ResultQueue() chan string`
+ - `ErrorQueue() chan string`
+
+Scamper command strings can be sent directly to the buffered CommandQueue
+channel. For example: `attach.CommandQueue() <- "ping 8.8.8.8"`
+
+Results and/or errors received from Scamper will be returned over the
+`ResultQueue()` and `ErrorQueue()` channels respectively. These
+channels _must_ be serviced otherwise ScAttach will deadlock once the
+channel buffers fill up.
+
+## TODOs
+
+The ultimate goal would be for Scamper to support usage as library,
+in which case we could use cgo to drive scamper directly rather than
+needing to connect to a stand-alone instance.
+
+In the meantime:
+ - Tests!!
+ - Finish `ScResult` implementation.
+ - Better CLI measurement building (see note for initMeasurement in main.go)
+ - Automatically start scamper daemon just in time for ScAttach to
+   connect to it.
+ - Transparently manage a pool of scamper instances (using ^^) to
+   allow high-volume probing (round-robin between instances). Could
+   also steer measurements based on target to try and work-around
+   scamper's one-concurrent-measurement-per-target limitation.

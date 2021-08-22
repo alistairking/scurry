@@ -18,14 +18,14 @@ type PingCmd struct {
 	// TODO
 }
 
-type TracerouteCmd struct {
+type TraceCmd struct {
 	// TODO
 }
 
 type ScurryCLI struct {
 	// measurement commands
-	Ping       PingCmd       `cmd help:"Ping measurements"`
-	Traceroute TracerouteCmd `cmd help:"Traceroute measurements"`
+	Ping  PingCmd  `cmd help:"Ping measurements"`
+	Trace TraceCmd `cmd help:"Traceroute measurements"`
 
 	// global measurement config
 	Target []string `required short:"t" help:"IP to execute measurements towards"`
@@ -75,13 +75,6 @@ func handleSignals(ctx context.Context, log zerolog.Logger, cancel context.Cance
 	}()
 }
 
-func initScurry(log zerolog.Logger, cfg ScurryCLI) (*scurry.Controller, error) {
-	sCfg := scurry.ControllerConfig{
-		ScamperURL: cfg.ScamperURL,
-	}
-	return scurry.NewController(log, sCfg)
-}
-
 // TODO: turn this inside out so that we let kong call Ping.Run which
 // populates the measurement and then calls a common function to
 // actually do the work
@@ -99,14 +92,16 @@ func initMeasurement(cmd string, cfg ScurryCLI) (scurry.Measurement, error) {
 	case scurry.MEASUREMENT_PING:
 		meas.Options.Ping = scurry.Ping(cfg.Ping)
 
-	case scurry.MEASUREMENT_TRACEROUTE:
-		meas.Options.Traceroute = scurry.Traceroute(cfg.Traceroute)
+	case scurry.MEASUREMENT_TRACE:
+		meas.Options.Trace = scurry.Trace(cfg.Trace)
 	}
 
 	return meas, nil
 }
 
-// TODO: move this stuff into the scurry package
+// TODO: move this stuff into the scurry package? Some kind of
+// QueueTargets(ctx, meas, targets) method that does this work. How to
+// keep it async?
 func queueMeasurements(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
 	ctrl *scurry.Controller, meas scurry.Measurement, cfg ScurryCLI) {
 	defer wg.Done()
@@ -123,7 +118,8 @@ func queueMeasurements(ctx context.Context, log zerolog.Logger, wg *sync.WaitGro
 	log.Debug().Msgf("Finished queueing measurements")
 }
 
-func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup, ctrl *scurry.Controller) {
+func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
+	ctrl *scurry.Controller) {
 	log.Debug().Msgf("Result receiver online")
 	defer wg.Done()
 
@@ -156,30 +152,41 @@ func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup, ct
 }
 
 func main() {
+	// Parse command line args
 	var cliCfg ScurryCLI
 	k := kong.Parse(&cliCfg)
 	k.Validate()
 
+	// Set up context, logger, and signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log, err := initLogger(cliCfg)
+	k.FatalIfErrorf(err)
+	handleSignals(ctx, log, cancel)
+
+	// Create a reusable measurement object.
+	// We'll just modify the `Target` field.
 	meas, err := initMeasurement(k.Command(), cliCfg)
 	k.FatalIfErrorf(err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	log, err := initLogger(cliCfg)
-	k.FatalIfErrorf(err)
-
-	handleSignals(ctx, log, cancel)
-
-	ctrl, err := initScurry(log, cliCfg)
+	// Create the scurry Controller
+	ctrl, err := scurry.NewController(log,
+		scurry.ControllerConfig{
+			ScamperURL: cliCfg.ScamperURL,
+		},
+	)
 	k.FatalIfErrorf(err)
 	defer ctrl.Close()
 
+	// Ready to go!
 	log.Info().
 		Interface("cfg", cliCfg).
 		Msgf("Scurrying!")
 
-	// Kick off a goroutine to feed our measurements
+	// Kick off a goroutine to feed our measurements to scurry
+	//
+	// We do this asynchronously in case we have more targets than
+	// scamper can accept at once.
 	qWg := &sync.WaitGroup{}
 	qWg.Add(1)
 	go queueMeasurements(ctx, log, qWg, ctrl, meas, cliCfg)
@@ -189,14 +196,20 @@ func main() {
 	resWg.Add(1)
 	go recvResults(ctx, log, resWg, ctrl)
 
-	// wait until all have been queued
+	// Wait until we have queued all our measurements
 	qWg.Wait()
 
-	// tell the controller that we're done queueing things
+	// Tell the controller that we're done queueing things. This
+	// will block until all of the measurments we queued have been
+	// handed off to scamper.
 	ctrl.Drain()
 
-	// and wait until we've received all the results
+	// Wait until we've received all the results (the Controller
+	// will signal this by closing the result channel).
 	resWg.Wait()
 
-	time.Sleep(time.Second) // wait for logger to drain
+	// Wait a moment for the logger to drain any remaining messages
+	time.Sleep(time.Second)
+
+	// NB: ctrl.Close() was defer'd above
 }

@@ -8,9 +8,9 @@ import (
 	"fmt"
 )
 
-const _MeasurementTypeName = "unknownpingtraceroute"
+const _MeasurementTypeName = "unknownpingtrace"
 
-var _MeasurementTypeIndex = [...]uint8{0, 7, 11, 21}
+var _MeasurementTypeIndex = [...]uint8{0, 7, 11, 16}
 
 func (i MeasurementType) String() string {
 	if i < 0 || i >= MeasurementType(len(_MeasurementTypeIndex)-1) {
@@ -24,7 +24,7 @@ var _MeasurementTypeValues = []MeasurementType{0, 1, 2}
 var _MeasurementTypeNameToValueMap = map[string]MeasurementType{
 	_MeasurementTypeName[0:7]:   0,
 	_MeasurementTypeName[7:11]:  1,
-	_MeasurementTypeName[11:21]: 2,
+	_MeasurementTypeName[11:16]: 2,
 }
 
 // MeasurementTypeString retrieves an enum value from the enum constants string name.

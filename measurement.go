@@ -13,9 +13,9 @@ type MeasurementCommand interface {
 type MeasurementType int
 
 const (
-	MEASUREMENT_UNKNOWN    MeasurementType = iota // unknown
-	MEASUREMENT_PING                              // ping
-	MEASUREMENT_TRACEROUTE                        // trace
+	MEASUREMENT_UNKNOWN MeasurementType = iota // unknown
+	MEASUREMENT_PING                           // ping
+	MEASUREMENT_TRACE                          // trace
 )
 
 type NoopOptions struct{}
@@ -33,19 +33,19 @@ func (p Ping) AsCommand() string {
 	return ""
 }
 
-type Traceroute struct {
+type Trace struct {
 	// TODO
 }
 
-func (t Traceroute) AsCommand() string {
+func (t Trace) AsCommand() string {
 	// TODO
 	return ""
 }
 
 type MeasurementOpts struct {
 	// MeasurementType-specific config:
-	Ping       Ping       `json:"ping"`
-	Traceroute Traceroute `json:"traceroute"`
+	Ping  Ping  `json:"ping"`
+	Trace Trace `json:"trace"`
 }
 
 type Measurement struct {
@@ -62,8 +62,8 @@ func (m Measurement) GetTypeOptions() MeasurementCommand {
 	switch m.Type {
 	case MEASUREMENT_PING:
 		return m.Options.Ping
-	case MEASUREMENT_TRACEROUTE:
-		return m.Options.Traceroute
+	case MEASUREMENT_TRACE:
+		return m.Options.Trace
 	}
 	return NoopOptions{}
 }
