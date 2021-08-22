@@ -3,6 +3,7 @@ package scurry
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -26,6 +27,7 @@ type Controller struct {
 	attach      *ScAttach
 	outstanding map[uint64]Measurement
 	nextId      uint64
+	errCmds     uint64
 	mu          *sync.RWMutex
 
 	measQ      chan Measurement
@@ -71,7 +73,7 @@ func NewController(log zerolog.Logger, cfg ControllerConfig) (*Controller, error
 	c.resWg.Add(1)
 	go c.responseHandler(resCtx)
 
-	c.log.Info().
+	c.log.Debug().
 		Interface("config", cfg).
 		Msgf("Controller online")
 
@@ -87,7 +89,6 @@ func (c *Controller) ResultQueue() chan Measurement {
 }
 
 func (c *Controller) Drain() {
-	c.log.Info().Msgf("Starting drain")
 	// the caller should have stopped queueing measurements, so we
 	// first wait for our measurement worker to drain
 	c.measCancel()
@@ -106,7 +107,7 @@ func (c *Controller) Close() {
 	c.resWg.Wait()
 	// close our scamper handler
 	c.attach.Close()
-	c.log.Info().Msgf("Shutdown complete")
+	c.log.Debug().Msgf("Shutdown complete")
 }
 
 func (c *Controller) sendMeasurement(meas Measurement) {
@@ -148,13 +149,13 @@ hamster:
 	if len(c.measQ) == 0 {
 		return
 	}
-	c.log.Info().
+	c.log.Debug().
 		Int("queue-length", len(c.measQ)).
 		Msgf("Draining measurement queue")
 	for len(c.measQ) > 0 {
 		c.sendMeasurement(<-c.measQ)
 	}
-	c.log.Info().
+	c.log.Debug().
 		Msgf("Measurement queue drained")
 }
 
@@ -189,8 +190,38 @@ func (c *Controller) handleResult(resStr string) {
 		return
 	}
 
-	meas.Result = *scRes
+	meas.Result = scRes
 	c.resQ <- meas
+}
+
+func (c *Controller) handleError(errStr string) {
+	c.log.Error().
+		Str("error", errStr).
+		Msgf("Received error from scamper")
+
+	// if we get a 'command not accepted' error, we don't know
+	// which command exactly failed, but we can increment a
+	// counter so that when we shut down we don't bother to wait
+	// for this result
+	atomic.AddUint64(&c.errCmds, 1)
+
+	// TODO: handle these in-band
+}
+
+func (c *Controller) Outstanding() int {
+	c.mu.RLock()
+	rem := len(c.outstanding)
+	c.mu.RUnlock()
+	errs := atomic.LoadUint64(&c.errCmds)
+	if rem >= int(errs) {
+		return rem - int(errs)
+	}
+	// this is odd
+	c.log.Warn().
+		Int("outstanding", rem).
+		Uint64("errors", errs).
+		Msgf("More errors than outstanding measurements")
+	return rem
 }
 
 func (c *Controller) responseHandler(ctx context.Context) {
@@ -209,10 +240,7 @@ hamster:
 			c.handleResult(resStr)
 
 		case errStr := <-errQ:
-			c.log.Error().
-				Str("error", errStr).
-				Msgf("Received error from scamper")
-			// TODO: handle these in-band
+			c.handleError(errStr)
 
 		case <-ctx.Done():
 			// canceled, need to drain both queues
@@ -222,38 +250,37 @@ hamster:
 
 	ctx, cancel := context.WithTimeout(context.Background(), SHUTDOWN_LINGER)
 	defer cancel()
-	c.mu.RLock()
-	rem := len(c.outstanding)
-	c.mu.RUnlock()
+	rem := c.Outstanding()
 	c.log.Info().
 		Int("outstanding", rem).
 		Dur("linger", SHUTDOWN_LINGER).
-		Msgf("Draining scamper response queues")
+		Msgf("Waiting for remaining measurements to complete")
+drain:
 	for {
 		select {
 		case resStr := <-resultQ:
 			c.handleResult(resStr)
-			c.mu.RLock()
-			rem := len(c.outstanding)
-			c.mu.RUnlock()
-			if rem == 0 {
+			if c.Outstanding() == 0 {
 				// done
-				c.log.Info().
-					Msgf("Received responses from scamper")
-				return
+				break drain
 			}
 
 		case errStr := <-errQ:
-			c.log.Error().
-				Str("error", errStr).
-				Msgf("Received error from scamper")
-			// TODO: handle these in-band
+			c.handleError(errStr)
 
 		case <-ctx.Done():
 			c.log.Error().
-				Int("outstanding", rem).
-				Msgf("Giving up waiting for responses from scamper")
-			return
+				Msgf("Giving up waiting for results from scamper")
+			break drain
 		}
+	}
+
+	// dump any measurements still outstanding back to the user
+	// these could be errors, or things that we gave up waiting for
+	c.log.Debug().
+		Int("abandoned", len(c.outstanding)).
+		Msgf("Received all results from scamper")
+	for _, meas := range c.outstanding {
+		c.resQ <- meas
 	}
 }

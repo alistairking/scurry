@@ -192,7 +192,7 @@ func (a *ScAttach) scamperRx(outCh chan string) {
 		outCh <- scanner.Text()
 	}
 	close(outCh)
-	a.log.Info().Msgf("Scamper rx loop ending")
+	a.log.Debug().Msgf("Scamper rx loop ending")
 }
 
 func (a *ScAttach) txWorker(ctx context.Context) {
@@ -210,7 +210,7 @@ func (a *ScAttach) txWorker(ctx context.Context) {
 			a.sendCmd(cmd)
 
 		case <-ctx.Done():
-			a.log.Info().Msgf("TX worker shutting down")
+			a.log.Debug().Msgf("TX worker shutting down")
 			return
 		}
 	}

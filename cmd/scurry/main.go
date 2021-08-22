@@ -28,11 +28,11 @@ type ScurryCLI struct {
 	Traceroute TracerouteCmd `cmd help:"Traceroute measurements"`
 
 	// global measurement config
-	Target []string `required help:"IP to execute measurements towards"`
+	Target []string `required short:"t" help:"IP to execute measurements towards"`
 	// TODO: TargetFile
-
+	//
 	// scamper connection info
-	ScamperURL string `required help:"URL to connect to scamper on (host:port or unix domain socket)"`
+	ScamperURL string `required short:"s" help:"URL to connect to scamper on (host:port or unix domain socket)"`
 
 	// misc flags
 	LogLevel string `help:"Log level" default:"info"`
@@ -120,7 +120,7 @@ func queueMeasurements(ctx context.Context, log zerolog.Logger, wg *sync.WaitGro
 		mCh <- meas
 	}
 
-	log.Info().Msgf("Finished queueing measurements")
+	log.Debug().Msgf("Finished queueing measurements")
 }
 
 func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup, ctrl *scurry.Controller) {

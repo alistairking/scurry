@@ -53,7 +53,7 @@ type Measurement struct {
 	Target  string          `json:"target"`
 	Options MeasurementOpts `json:"options"`
 
-	Result ScResult `json:"result"`
+	Result *ScResult `json:"result"`
 
 	userId uint64 // used internally to match results with measurements
 }
