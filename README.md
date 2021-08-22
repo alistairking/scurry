@@ -86,6 +86,39 @@ $ scurry -s /tmp/scamper.sock ping -t 8.8.8.8 | jq
 }
 ```
 
+Traceroute to `8.8.8.8`
+```json
+scurry -s /tmp/scamper.sock trace -t 8.8.8.8 | jq
+2021-08-22T10:39:25-07:00 INF Scurrying! cfg={"LogLevel":"info","Ping":{},"ScamperURL":"/tmp/scamper.sock","Target":["8.8.8.8"],"Trace":{}}
+2021-08-22T10:39:25-07:00 INF Waiting for remaining measurements to complete linger=60000 module=controller outstanding=1 package=scurry
+2021-08-22T10:39:35-07:00 INF Finished receiving results total=1
+{
+  "type": "trace",
+  "target": "8.8.8.8",
+  "options": {
+    "ping": {},
+    "trace": {}
+  },
+  "result": {
+    "type": "trace",
+    "version": "0.1",
+    "method": "udp-paris",
+    "src": "10.250.100.2",
+    "dst": "8.8.8.8",
+    "start": {
+      "sec": 1629653965,
+      "usec": 261318
+    },
+    "ping_sent": 0,
+    "probe_size": 44,
+    "userid": 1,
+    "ttl": 0,
+    "wait": 5,
+    "timeout": 0
+  }
+}
+```
+
 ### Package
 
 #### Controller
