@@ -11,6 +11,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/alistairking/scurry"
+	"github.com/alistairking/scurry/measurement"
 	"github.com/rs/zerolog"
 )
 
@@ -24,8 +25,8 @@ type TraceCmd struct {
 
 type ScurryCLI struct {
 	// measurement commands
-	Ping  PingCmd  `cmd help:"Ping measurements"`
-	Trace TraceCmd `cmd help:"Traceroute measurements"`
+	Ping  measurement.Ping  `cmd help:"Ping measurements"`
+	Trace measurement.Trace `cmd help:"Traceroute measurements"`
 
 	// global measurement config
 	Target []string `required short:"t" help:"IP to execute measurements towards"`
@@ -76,46 +77,46 @@ func handleSignals(ctx context.Context, log zerolog.Logger, cancel context.Cance
 }
 
 // TODO: turn this inside out so that we let kong call Ping.Run which
-// populates the measurement and then calls a common function to
-// actually do the work
-func initMeasurement(cmd string, cfg ScurryCLI) (scurry.Measurement, error) {
-	meas := scurry.Measurement{}
-	// build a base measurement that we'll reuse
-	mTypeStr := cmd
-	mType, err := scurry.MeasurementTypeString(mTypeStr)
+// populates the task and then calls a common function to actually do
+// the work
+func initTask(cmd string, cfg ScurryCLI) (measurement.Task, error) {
+	task := measurement.Task{}
+	// build a base task that we'll reuse
+	typeStr := cmd
+	tType, err := measurement.TypeString(typeStr)
 	if err != nil {
-		return meas, err
+		return task, err
 	}
-	meas.Type = mType
+	task.Type = tType
 
-	switch mType {
-	case scurry.MEASUREMENT_PING:
-		meas.Options.Ping = scurry.Ping(cfg.Ping)
+	switch tType {
+	case measurement.TYPE_PING:
+		task.Options.Ping = cfg.Ping
 
-	case scurry.MEASUREMENT_TRACE:
-		meas.Options.Trace = scurry.Trace(cfg.Trace)
+	case measurement.TYPE_TRACE:
+		task.Options.Trace = cfg.Trace
 	}
 
-	return meas, nil
+	return task, nil
 }
 
 // TODO: move this stuff into the scurry package? Some kind of
 // QueueTargets(ctx, meas, targets) method that does this work. How to
 // keep it async?
-func queueMeasurements(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
-	ctrl *scurry.Controller, meas scurry.Measurement, cfg ScurryCLI) {
+func queueTasks(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
+	ctrl *scurry.Controller, task measurement.Task, cfg ScurryCLI) {
 	defer wg.Done()
 
-	mCh := ctrl.MeasurementQueue()
+	mCh := ctrl.TaskQueue()
 	for _, target := range cfg.Target {
 		log.Debug().
 			Str("target", target).
-			Msgf("Queueing measurement")
-		meas.Target = target
-		mCh <- meas
+			Msgf("Queueing task")
+		task.Target = target
+		mCh <- task
 	}
 
-	log.Debug().Msgf("Finished queueing measurements")
+	log.Debug().Msgf("Finished queueing tasks")
 }
 
 func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
@@ -125,7 +126,7 @@ func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
 
 	cnt := uint64(0)
 	q := ctrl.ResultQueue()
-	eoq := scurry.Measurement{}
+	eoq := measurement.Task{}
 	for {
 		select {
 		case result := <-q:
@@ -164,9 +165,9 @@ func main() {
 	k.FatalIfErrorf(err)
 	handleSignals(ctx, log, cancel)
 
-	// Create a reusable measurement object.
+	// Create a reusable task object.
 	// We'll just modify the `Target` field.
-	meas, err := initMeasurement(k.Command(), cliCfg)
+	task, err := initTask(k.Command(), cliCfg)
 	k.FatalIfErrorf(err)
 
 	// Create the scurry Controller
@@ -183,24 +184,24 @@ func main() {
 		Interface("cfg", cliCfg).
 		Msgf("Scurrying!")
 
-	// Kick off a goroutine to feed our measurements to scurry
+	// Kick off a goroutine to feed our tasks to scurry
 	//
 	// We do this asynchronously in case we have more targets than
 	// scamper can accept at once.
 	qWg := &sync.WaitGroup{}
 	qWg.Add(1)
-	go queueMeasurements(ctx, log, qWg, ctrl, meas, cliCfg)
+	go queueTasks(ctx, log, qWg, ctrl, task, cliCfg)
 
 	// And another to retrieve the responses
 	resWg := &sync.WaitGroup{}
 	resWg.Add(1)
 	go recvResults(ctx, log, resWg, ctrl)
 
-	// Wait until we have queued all our measurements
+	// Wait until we have queued all our tasks
 	qWg.Wait()
 
 	// Tell the controller that we're done queueing things. This
-	// will block until all of the measurments we queued have been
+	// will block until all of the tasks we queued have been
 	// handed off to scamper.
 	ctrl.Drain()
 

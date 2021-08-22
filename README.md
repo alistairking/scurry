@@ -124,10 +124,10 @@ scurry -s /tmp/scamper.sock trace -t 8.8.8.8 | jq
 #### Controller
 
 The `Controller` type is currently the easiest way to drive
-scamper. It accepts [`Measurement`](./measurement.go) objects over a
-channel (`Controller.MeasurementQueue()`), and (asynchronously)
-returns the same objects populated with a scamper result object over
-another channel (`Controller.ResultQueue()`).
+scamper. It accepts [`Task`](./measurment/task.go) objects over a
+channel (`Controller.TaskQueue()`), and (asynchronously) returns the
+same objects populated with a scamper result object over another
+channel (`Controller.ResultQueue()`).
 
 See the `main()` function of the [scurry CLI](./cmd/scurry/main.go)
 for a worked example of using the Controller.
@@ -162,10 +162,10 @@ needing to connect to a stand-alone instance.
 In the meantime:
  - Tests!!
  - Finish `ScResult` implementation.
- - Better CLI measurement building (see note for initMeasurement in main.go)
+ - Better CLI measurement building (see note for initTask in main.go)
  - Automatically start scamper daemon just in time for ScAttach to
    connect to it.
  - Transparently manage a pool of scamper instances (using ^^) to
    allow high-volume probing (round-robin between instances). Could
-   also steer measurements based on target to try and work-around
-   scamper's one-concurrent-measurement-per-target limitation.
+   also steer tasks based on target to try and work-around scamper's
+   one-concurrent-measurement-per-target limitation.

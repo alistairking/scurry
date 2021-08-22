@@ -29,7 +29,7 @@ mod-tidy:
 
 codegen:
 	go get -d github.com/alvaroloes/enumer
-	go generate ./
+	go generate ./measurement/
 
 run: cli
 	$(BINDIR)/$(CLI)

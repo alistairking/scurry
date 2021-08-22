@@ -1,4 +1,4 @@
-package scurry
+package measurement
 
 import (
 	"encoding/json"
