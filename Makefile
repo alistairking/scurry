@@ -28,7 +28,7 @@ mod-tidy:
 	$(GOMOD) tidy
 
 codegen:
-	go get github.com/alvaroloes/enumer
+	go get -d github.com/alvaroloes/enumer
 	go generate ./
 
 run: cli

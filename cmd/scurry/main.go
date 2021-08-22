@@ -103,15 +103,18 @@ func initMeasurement(cmd string, cfg ScurryCLI) (scurry.Measurement, error) {
 // TODO: move this stuff into the scurry package
 func queueMeasurements(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup,
 	ctrl *scurry.Controller, meas scurry.Measurement, cfg ScurryCLI) {
+	defer wg.Done()
 
+	mCh := ctrl.MeasurementQueue()
 	for _, target := range cfg.Target {
 		log.Debug().
 			Str("target", target).
 			Msgf("Queueing measurement")
+		meas.Target = target
+		mCh <- meas
 	}
 
 	log.Info().Msgf("Finished queueing measurements")
-	wg.Done()
 }
 
 func recvResults(ctx context.Context, log zerolog.Logger, wg *sync.WaitGroup, ctrl *scurry.Controller) {

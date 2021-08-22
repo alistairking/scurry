@@ -1,16 +1,18 @@
 package scurry
 
 import (
-	"net"
-	"strings"
+	"context"
+	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
 
 const (
 	// TODO: make this configurable
-	SEND_Q_LEN = 100
-	RECV_Q_LEN = 100
+	SEND_Q_LEN      = 100
+	RECV_Q_LEN      = 100
+	SHUTDOWN_LINGER = time.Second * 60
 )
 
 type ControllerConfig struct {
@@ -19,70 +21,55 @@ type ControllerConfig struct {
 
 // Simple scamper control socket client
 type Controller struct {
-	log zerolog.Logger
-	cfg ControllerConfig
+	log    Logger
+	cfg    ControllerConfig
+	attach *ScAttach
 
-	sConn net.Conn
+	measQ      chan Measurement
+	measCancel context.CancelFunc
+	measWg     *sync.WaitGroup
 
-	measQ chan Measurement
-	resQ  chan Measurement
-}
-
-// TODO: move this to a common location
-func initLogger(log zerolog.Logger) zerolog.Logger {
-	return log.With().
-		Str("package", "scurry").
-		Str("module", "controller").
-		Logger()
+	resQ      chan Measurement
+	resCancel context.CancelFunc
+	resWg     *sync.WaitGroup
 }
 
 func NewController(log zerolog.Logger, cfg ControllerConfig) (*Controller, error) {
-	c := &Controller{
-		log: initLogger(log),
-		cfg: cfg,
+	measCtx, measCancel := context.WithCancel(context.Background())
+	resCtx, resCancel := context.WithCancel(context.Background())
 
-		measQ: make(chan Measurement, SEND_Q_LEN),
-		resQ:  make(chan Measurement, RECV_Q_LEN),
-	}
-
-	// connect and attach to scamper daemon
-	err := c.initScamper()
+	attach, err := NewScAttach(log, cfg.ScamperURL)
 	if err != nil {
 		return nil, err
 	}
+
+	c := &Controller{
+		log:    initLogger(log, "controller"),
+		cfg:    cfg,
+		attach: attach,
+
+		measQ:      make(chan Measurement, SEND_Q_LEN),
+		measCancel: measCancel,
+		measWg:     &sync.WaitGroup{},
+
+		resQ:      make(chan Measurement, RECV_Q_LEN),
+		resCancel: resCancel,
+		resWg:     &sync.WaitGroup{},
+	}
+
+	// start up our measurement execution proxy
+	c.measWg.Add(1)
+	go c.measurementHandler(measCtx)
+
+	// and our result matching proxy
+	c.resWg.Add(1)
+	go c.responseHandler(resCtx)
 
 	c.log.Info().
 		Interface("config", cfg).
 		Msgf("Controller online")
 
 	return c, nil
-}
-
-func (c *Controller) initScamper() error {
-	// TODO: better unix socket detection
-	var conn net.Conn
-	var err error
-	if strings.Contains(":", c.cfg.ScamperURL) {
-		conn, err = net.Dial("tcp", c.cfg.ScamperURL)
-	} else {
-		conn, err = net.Dial("unix", c.cfg.ScamperURL)
-	}
-	if err != nil {
-		return err
-	}
-	c.sConn = conn
-
-	// create buffered writer/reader
-
-	// send our attach command now
-	return c.sendCmd("attach \"1\" \"json\"")
-}
-
-func (c *Controller) sendCmd(cmd string) error {
-	c.log.Debug().
-		Str("command", cmd).
-		Msgf("Sending command to scamper")
-	return nil
 }
 
 func (c *Controller) MeasurementQueue() chan Measurement {
@@ -94,17 +81,139 @@ func (c *Controller) ResultQueue() chan Measurement {
 }
 
 func (c *Controller) Drain() {
-	c.log.Debug().Msgf("Starting drain")
-	close(c.measQ)
-	// TODO: tell result guy to close the channel once all outstanding measurements come back
-	close(c.resQ) // XXXX
+	c.log.Info().Msgf("Starting drain")
+	// the caller should have stopped queueing measurements, so we
+	// first wait for our measurement worker to drain
+	c.measCancel()
+	c.measWg.Wait()
+
+	// now signal to the result worker that it should shut down
+	// once all outstanding results are back
+	c.resCancel()
 }
 
 func (c *Controller) Close() {
 	if c == nil {
 		return
 	}
-	c.log.Info().Msgf("Shutting down")
+	// wait for result drain to complete (it should be)
+	c.resWg.Wait()
+	// close our scamper handler
+	c.attach.Close()
+	c.log.Info().Msgf("Shutdown complete")
+}
 
-	c.sConn.Close()
+func (c *Controller) measurementHandler(ctx context.Context) {
+	defer func() {
+		close(c.measQ)
+		c.measWg.Done()
+	}()
+
+	// pull from our measurement queue, convert to a scamper
+	// command and hand off to ScAttach for execution
+	scQ := c.attach.CommandQueue()
+hamster:
+	for {
+		select {
+		case _ = <-c.measQ:
+			// TODO: actually convert this to a command
+			measStr := "ping 8.8.8.8"
+			c.log.Debug().
+				Str("measurement", measStr).
+				Msgf("Sending measurement to scamper")
+			// this might block
+			scQ <- measStr
+
+		case <-ctx.Done():
+			// canceled, need to drain measQ and then exit
+			break hamster
+		}
+	}
+
+	if len(c.measQ) == 0 {
+		return
+	}
+	c.log.Info().
+		Int("queue-length", len(c.measQ)).
+		Msgf("Draining measurement queue")
+	for _ = range c.measQ {
+		// TODO: actually convert this to a command
+		measStr := "ping 8.8.8.8"
+		c.log.Debug().
+			Str("measurement", measStr).
+			Msgf("Sending measurement to scamper")
+		// this might block
+		scQ <- measStr
+	}
+	c.log.Info().
+		Msgf("Measurement queue drained")
+}
+
+func (c *Controller) responseHandler(ctx context.Context) {
+	defer func() {
+		close(c.resQ)
+		c.resWg.Done()
+	}()
+
+	// service both the result and error queues from ScAttach
+	resultQ := c.attach.ResultQueue()
+	errQ := c.attach.ErrorQueue()
+hamster:
+	for {
+		select {
+		case resStr := <-resultQ:
+			c.log.Debug().
+				Str("result", resStr).
+				Msgf("Received result from scamper")
+			// TODO: parse it, match against queued
+			// measurement, and then push into c.resQ
+
+		case errStr := <-errQ:
+			c.log.Error().
+				Str("error", errStr).
+				Msgf("Received error from scamper")
+			// TODO: handle these in-band
+
+		case <-ctx.Done():
+			// canceled, need to drain both queues
+			break hamster
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), SHUTDOWN_LINGER)
+	defer cancel()
+	// TODO: change this so that we stop early once all
+	// outstanding measurements are back
+	rem := 1 // XXX
+	c.log.Info().
+		Int("outstanding", rem).
+		Dur("linger", SHUTDOWN_LINGER).
+		Msgf("Draining scamper response queues")
+	for {
+		select {
+		case resStr := <-resultQ:
+			c.log.Debug().
+				Str("result", resStr).
+				Msgf("Received result from scamper")
+			// TODO: parse it, match against queued
+			// measurement, and then push into c.resQ
+			if rem == 0 {
+				// done
+				c.log.Info().
+					Msgf("Received responses from scamper")
+			}
+
+		case errStr := <-errQ:
+			c.log.Error().
+				Str("error", errStr).
+				Msgf("Received error from scamper")
+			// TODO: handle these in-band
+
+		case <-ctx.Done():
+			c.log.Error().
+				Int("outstanding", rem).
+				Msgf("Giving up waiting for responses from scamper")
+			return
+		}
+	}
 }
